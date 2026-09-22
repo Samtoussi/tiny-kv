@@ -1,8 +1,108 @@
+import os
 import socket
 import threading
 
+AOF_FILE = "tinykv.aof"
+
 store = {}
 store_lock = threading.Lock()
+
+
+def append_to_aof(command):
+    with open(AOF_FILE, "a") as file:
+        file.write(command + "\n")
+
+
+def execute_command(message, replay=False):
+    if not message:
+        return "ERROR: empty command"
+
+    parts = message.split(" ", 2)
+    command = parts[0].upper()
+
+    if command == "SET":
+        if len(parts) < 3:
+            return "ERROR: SET requires a key and value"
+
+        key = parts[1]
+        value = parts[2]
+
+        with store_lock:
+            store[key] = value
+
+            if not replay:
+                append_to_aof(message)
+
+        return "OK"
+
+    elif command == "GET":
+        if len(parts) < 2:
+            return "ERROR: GET requires a key"
+
+        key = parts[1]
+
+        with store_lock:
+            value = store.get(key)
+
+        if value is not None:
+            return value
+
+        return "(nil)"
+
+    elif command == "DEL":
+        if len(parts) < 2:
+            return "ERROR: DEL requires a key"
+
+        key = parts[1]
+
+        with store_lock:
+            if key in store:
+                del store[key]
+
+                if not replay:
+                    append_to_aof(message)
+
+                return "OK"
+
+        return "(nil)"
+
+    elif command == "INCR":
+        if len(parts) < 2:
+            return "ERROR: INCR requires a key"
+
+        key = parts[1]
+
+        with store_lock:
+            if key not in store:
+                store[key] = "0"
+
+            try:
+                value = int(store[key])
+            except ValueError:
+                return "ERROR: value is not an integer"
+
+            value += 1
+            store[key] = str(value)
+
+            if not replay:
+                append_to_aof(message)
+
+        return str(value)
+
+    else:
+        return "ERROR: unknown command"
+
+
+def load_aof():
+    if not os.path.exists(AOF_FILE):
+        return
+
+    with open(AOF_FILE, "r") as file:
+        for line in file:
+            command = line.strip()
+
+            if command:
+                execute_command(command, replay=True)
 
 
 def handle_client(client_socket, client_address):
@@ -24,102 +124,17 @@ def handle_client(client_socket, client_address):
 
             print(f"Received from {client_address}: {message}")
 
-            if not message:
-                client_socket.sendall(b"ERROR: empty command\n")
-                continue
+            response = execute_command(message)
 
-            parts = message.split(" ", 2)
-            command = parts[0].upper()
-
-            if command == "SET":
-                if len(parts) < 3:
-                    client_socket.sendall(
-                        b"ERROR: SET requires a key and value\n"
-                    )
-                    continue
-
-                key = parts[1]
-                value = parts[2]
-
-                with store_lock:
-                    store[key] = value
-
-                client_socket.sendall(b"OK\n")
-
-            elif command == "GET":
-                if len(parts) < 2:
-                    client_socket.sendall(
-                        b"ERROR: GET requires a key\n"
-                    )
-                    continue
-
-                key = parts[1]
-
-                with store_lock:
-                    value = store.get(key)
-
-                if value is not None:
-                    client_socket.sendall(
-                        f"{value}\n".encode("utf-8")
-                    )
-                else:
-                    client_socket.sendall(b"(nil)\n")
-
-            elif command == "DEL":
-                if len(parts) < 2:
-                    client_socket.sendall(
-                        b"ERROR: DEL requires a key\n"
-                    )
-                    continue
-
-                key = parts[1]
-
-                with store_lock:
-                    if key in store:
-                        del store[key]
-                        deleted = True
-                    else:
-                        deleted = False
-
-                if deleted:
-                    client_socket.sendall(b"OK\n")
-                else:
-                    client_socket.sendall(b"(nil)\n")
-
-            elif command == "INCR":
-                if len(parts) < 2:
-                    client_socket.sendall(
-                        b"ERROR: INCR requires a key\n"
-                    )
-                    continue
-
-                key = parts[1]
-
-                with store_lock:
-                    if key not in store:
-                        store[key] = "0"
-
-                    try:
-                        value = int(store[key])
-                    except ValueError:
-                        client_socket.sendall(
-                            b"ERROR: value is not an integer\n"
-                        )
-                        continue
-
-                    value += 1
-                    store[key] = str(value)
-
-                client_socket.sendall(
-                    f"{value}\n".encode("utf-8")
-                )
-
-            else:
-                client_socket.sendall(b"ERROR: unknown command\n")
+            client_socket.sendall(
+                f"{response}\n".encode("utf-8")
+            )
 
     client_socket.close()
     print(f"Client disconnected: {client_address}")
 
+
+load_aof()
 
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
