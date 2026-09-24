@@ -179,54 +179,59 @@ def handle_shutdown(signum, frame):
     shutdown_event.set()
 
 
-load_aof()
+def main():
+    load_aof()
 
-server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-server_socket.setsockopt(
-    socket.SOL_SOCKET,
-    socket.SO_REUSEADDR,
-    1,
-)
+    server_socket.setsockopt(
+        socket.SOL_SOCKET,
+        socket.SO_REUSEADDR,
+        1,
+    )
 
-server_socket.settimeout(1.0)
-server_socket.bind(("127.0.0.1", 6379))
-server_socket.listen()
+    server_socket.settimeout(1.0)
+    server_socket.bind(("127.0.0.1", 6379))
+    server_socket.listen()
 
-signal.signal(signal.SIGINT, handle_shutdown)
-signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
 
-print("TinyKV listening on 127.0.0.1:6379...")
+    print("TinyKV listening on 127.0.0.1:6379...")
 
-try:
-    while not shutdown_event.is_set():
-        try:
-            client_socket, client_address = server_socket.accept()
+    try:
+        while not shutdown_event.is_set():
+            try:
+                client_socket, client_address = server_socket.accept()
 
-            client_thread = threading.Thread(
-                target=handle_client,
-                args=(client_socket, client_address),
-            )
+                client_thread = threading.Thread(
+                    target=handle_client,
+                    args=(client_socket, client_address),
+                )
 
-            client_thread.start()
+                client_thread.start()
 
-        except socket.timeout:
-            continue
+            except socket.timeout:
+                continue
 
-finally:
-    print("Shutting down TinyKV...")
+    finally:
+        print("Shutting down TinyKV...")
 
-    server_socket.close()
+        server_socket.close()
 
-    with clients_lock:
-        sockets_to_close = list(client_sockets)
+        with clients_lock:
+            sockets_to_close = list(client_sockets)
 
-    for client_socket in sockets_to_close:
-        try:
-            client_socket.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
+        for client_socket in sockets_to_close:
+            try:
+                client_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
-        client_socket.close()
+            client_socket.close()
 
-    print("TinyKV stopped.")
+        print("TinyKV stopped.")
+
+
+if __name__ == "__main__":
+    main()
