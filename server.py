@@ -3,6 +3,7 @@ import socket
 import threading
 
 AOF_FILE = "tinykv.aof"
+TEMP_AOF_FILE = "tinykv.aof.tmp"
 
 store = {}
 store_lock = threading.Lock()
@@ -11,6 +12,19 @@ store_lock = threading.Lock()
 def append_to_aof(command):
     with open(AOF_FILE, "a") as file:
         file.write(command + "\n")
+        file.flush()
+        os.fsync(file.fileno())
+
+
+def compact_aof():
+    with open(TEMP_AOF_FILE, "w") as file:
+        for key, value in store.items():
+            file.write(f"SET {key} {value}\n")
+
+        file.flush()
+        os.fsync(file.fileno())
+
+    os.replace(TEMP_AOF_FILE, AOF_FILE)
 
 
 def execute_command(message, replay=False):
@@ -88,6 +102,15 @@ def execute_command(message, replay=False):
                 append_to_aof(message)
 
         return str(value)
+
+    elif command == "COMPACT":
+        if replay:
+            return "OK"
+
+        with store_lock:
+            compact_aof()
+
+        return "OK"
 
     else:
         return "ERROR: unknown command"
