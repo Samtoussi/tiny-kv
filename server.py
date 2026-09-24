@@ -1,4 +1,5 @@
 import os
+import signal
 import socket
 import threading
 
@@ -7,6 +8,10 @@ TEMP_AOF_FILE = "tinykv.aof.tmp"
 
 store = {}
 store_lock = threading.Lock()
+
+shutdown_event = threading.Event()
+client_sockets = set()
+clients_lock = threading.Lock()
 
 
 def append_to_aof(command):
@@ -131,47 +136,97 @@ def load_aof():
 def handle_client(client_socket, client_address):
     print(f"Client connected from {client_address}")
 
+    with clients_lock:
+        client_sockets.add(client_socket)
+
     buffer = ""
 
-    while True:
-        data = client_socket.recv(1024)
+    try:
+        while not shutdown_event.is_set():
+            data = client_socket.recv(1024)
 
-        if not data:
-            break
+            if not data:
+                break
 
-        buffer += data.decode("utf-8")
+            buffer += data.decode("utf-8")
 
-        while "\n" in buffer:
-            message, buffer = buffer.split("\n", 1)
-            message = message.strip()
+            while "\n" in buffer:
+                message, buffer = buffer.split("\n", 1)
+                message = message.strip()
 
-            print(f"Received from {client_address}: {message}")
+                print(f"Received from {client_address}: {message}")
 
-            response = execute_command(message)
+                response = execute_command(message)
 
-            client_socket.sendall(
-                f"{response}\n".encode("utf-8")
-            )
+                client_socket.sendall(
+                    f"{response}\n".encode("utf-8")
+                )
 
-    client_socket.close()
-    print(f"Client disconnected: {client_address}")
+    except OSError:
+        # Expected if the socket is closed during shutdown.
+        pass
+
+    finally:
+        with clients_lock:
+            client_sockets.discard(client_socket)
+
+        client_socket.close()
+        print(f"Client disconnected: {client_address}")
+
+
+def handle_shutdown(signum, frame):
+    print("\nShutdown requested...")
+    shutdown_event.set()
 
 
 load_aof()
 
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
+server_socket.setsockopt(
+    socket.SOL_SOCKET,
+    socket.SO_REUSEADDR,
+    1,
+)
+
+server_socket.settimeout(1.0)
 server_socket.bind(("127.0.0.1", 6379))
 server_socket.listen()
 
+signal.signal(signal.SIGINT, handle_shutdown)
+signal.signal(signal.SIGTERM, handle_shutdown)
+
 print("TinyKV listening on 127.0.0.1:6379...")
 
-while True:
-    client_socket, client_address = server_socket.accept()
+try:
+    while not shutdown_event.is_set():
+        try:
+            client_socket, client_address = server_socket.accept()
 
-    client_thread = threading.Thread(
-        target=handle_client,
-        args=(client_socket, client_address),
-    )
+            client_thread = threading.Thread(
+                target=handle_client,
+                args=(client_socket, client_address),
+            )
 
-    client_thread.start()
+            client_thread.start()
+
+        except socket.timeout:
+            continue
+
+finally:
+    print("Shutting down TinyKV...")
+
+    server_socket.close()
+
+    with clients_lock:
+        sockets_to_close = list(client_sockets)
+
+    for client_socket in sockets_to_close:
+        try:
+            client_socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+        client_socket.close()
+
+    print("TinyKV stopped.")
